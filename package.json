@@ -10,17 +10,46 @@
     "Other"
   ],
   "activationEvents": [
-  "workspaceContains:.vscode/*.njk.yaml",
+    "workspaceContains:**/.vscode/*.njk.yaml",
     "onStartupFinished"
   ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
-  "command": "nunjucksu.renderAll",
-  "title": "Render Nunjucks Templates"
+        "command": "nunjucksu.renderAll",
+        "title": "Render Nunjucks Templates"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Nunjucksu",
+      "properties": {
+        "nunjucksu.logLevel": {
+          "type": "string",
+          "default": "normal",
+          "enum": ["silent", "normal", "verbose"],
+          "enumDescriptions": [
+            "Only show errors and warnings",
+            "Show render completions and errors",
+            "Show all operations including config reloads"
+          ],
+          "description": "Controls output channel verbosity"
+        },
+        "nunjucksu.templateExtension": {
+          "type": "string",
+          "default": ".njk",
+          "description": "File extension for Nunjucks templates (e.g., .njk, .nunjucks)"
+        },
+        "nunjucksu.additionalSearchPaths": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional directories to search for templates (for {% include %} and {% extends %})"
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",

@@ -11,6 +11,10 @@ export default [{
         parser: typescriptEslint.parser,
         ecmaVersion: 2022,
         sourceType: "module",
+        parserOptions: {
+            projectService: true,
+            tsconfigRootDir: import.meta.dirname,
+        },
     },
 
     rules: {
@@ -18,6 +22,8 @@ export default [{
             selector: "import",
             format: ["camelCase", "PascalCase"],
         }],
+        "@typescript-eslint/no-floating-promises": "error",
+        "@typescript-eslint/await-thenable": "error",
 
         curly: "warn",
         eqeqeq: "warn",

@@ -45,11 +45,14 @@ function uniquePaths(paths: string[]): string[] {
 	return Array.from(seen);
 }
 
+const RENDER_TIMEOUT_MS = 30000; // 30 seconds
+
 export class NunjucksController implements vscode.Disposable {
 	private readonly output: vscode.OutputChannel;
 	private readonly sourceWatchers: vscode.FileSystemWatcher[] = [];
 	private readonly transformsBySource = new Map<string, FileTransformEntry[]>();
 	private readonly renderQueue = new Map<string, Promise<void>>();
+	private readonly renderTimestamps = new Map<string, number>();
 	private configWatcher: vscode.FileSystemWatcher | undefined;
 	private templateWatcher: vscode.FileSystemWatcher | undefined;
 	private transforms: FileTransformEntry[] = [];
@@ -64,6 +67,10 @@ export class NunjucksController implements vscode.Disposable {
 	constructor(private readonly context: vscode.ExtensionContext) {
 		this.output = vscode.window.createOutputChannel('Nunjucksu');
 		this.context.subscriptions.push(this.output);
+		
+		// Periodically clean up stale render queue entries
+		const cleanupInterval = setInterval(() => this.cleanupStaleRenders(), 60000);
+		this.context.subscriptions.push({ dispose: () => clearInterval(cleanupInterval) });
 	}
 
 	async initialize(): Promise<void> {
@@ -72,11 +79,55 @@ export class NunjucksController implements vscode.Disposable {
 		this.setupTemplateWatcher();
 	}
 
+	private getLogLevel(): 'silent' | 'normal' | 'verbose' {
+		const config = vscode.workspace.getConfiguration('nunjucksu');
+		return config.get<'silent' | 'normal' | 'verbose'>('logLevel', 'normal');
+	}
+
+	private getTemplateExtension(): string {
+		const config = vscode.workspace.getConfiguration('nunjucksu');
+		return config.get<string>('templateExtension', '.njk');
+	}
+
+	private getAdditionalSearchPaths(): string[] {
+		const config = vscode.workspace.getConfiguration('nunjucksu');
+		return config.get<string[]>('additionalSearchPaths', []);
+	}
+
+	private log(message: string, level: 'normal' | 'verbose' = 'normal'): void {
+		const currentLevel = this.getLogLevel();
+		if (currentLevel === 'silent') {
+			return;
+		}
+		if (level === 'verbose' && currentLevel !== 'verbose') {
+			return;
+		}
+		this.output.appendLine(message);
+	}
+
 	dispose(): void {
 		this.disposeSourceWatchers();
 		this.configWatcher?.dispose();
 		this.templateWatcher?.dispose();
 		this.renderQueue.clear();
+		this.renderTimestamps.clear();
+	}
+
+	private cleanupStaleRenders(): void {
+		const now = Date.now();
+		const staleKeys: string[] = [];
+		
+		for (const [key, timestamp] of this.renderTimestamps.entries()) {
+			if (now - timestamp > RENDER_TIMEOUT_MS) {
+				staleKeys.push(key);
+			}
+		}
+		
+		for (const key of staleKeys) {
+			this.renderQueue.delete(key);
+			this.renderTimestamps.delete(key);
+			this.log(`Nunjucksu: cleaned up stale render for ${key}`, 'verbose');
+		}
 	}
 
 	async renderAll(): Promise<void> {
@@ -111,17 +162,78 @@ export class NunjucksController implements vscode.Disposable {
 			return;
 		}
 
-		const watcher = vscode.workspace.createFileSystemWatcher('**/*.njk', false, false, false);
-		const trigger = () => {
-			void this.refreshTemplateTransforms();
-		};
+		const ext = this.getTemplateExtension();
+		const pattern = ext.startsWith('.') ? `**/*${ext}` : `**/*.${ext}`;
+		const watcher = vscode.workspace.createFileSystemWatcher(pattern, false, false, false);
 
-		watcher.onDidChange(trigger);
-		watcher.onDidCreate(trigger);
-		watcher.onDidDelete(trigger);
+		// Use incremental updates instead of full rescans
+		watcher.onDidChange(uri => this.handleTemplateChange(uri));
+		watcher.onDidCreate(uri => this.handleTemplateChange(uri));
+		watcher.onDidDelete(uri => this.handleTemplateDelete(uri));
 
 		this.templateWatcher = watcher;
 		this.context.subscriptions.push(watcher);
+	}
+
+	private handleTemplateChange(uri: vscode.Uri): void {
+		// For large projects, only check if this specific template should be added/updated
+		const key = normalizeFsPath(uri.fsPath);
+		
+		// Check if this template is part of a directory transform
+		for (const dirTransform of this.directoryTransforms) {
+			const relativePath = path.relative(dirTransform.sourceDir, uri.fsPath);
+			
+			if (!relativePath.startsWith('..') && !path.isAbsolute(relativePath)) {
+				const entry = this.createDirectoryFileTransform(dirTransform, uri, relativePath);
+				if (entry) {
+					// Update or add this single template
+					const existingIndex = this.templateTransforms.findIndex(t => 
+						normalizeFsPath(t.source.fsPath) === key
+					);
+					
+					if (existingIndex >= 0) {
+						this.templateTransforms[existingIndex] = entry;
+					} else {
+						this.templateTransforms.push(entry);
+					}
+					
+					this.rebuildTransformsList();
+					this.rebuildSourceWatchers();
+					return;
+				}
+			}
+		}
+	}
+
+	private handleTemplateDelete(uri: vscode.Uri): void {
+		const key = normalizeFsPath(uri.fsPath);
+		const initialLength = this.templateTransforms.length;
+		
+		this.templateTransforms = this.templateTransforms.filter(t => 
+			normalizeFsPath(t.source.fsPath) !== key
+		);
+		
+		if (this.templateTransforms.length !== initialLength) {
+			this.rebuildTransformsList();
+			this.rebuildSourceWatchers();
+		}
+	}
+
+	private rebuildTransformsList(): void {
+		const configBySource = new Map<string, FileTransformEntry>();
+		for (const entry of this.configFileTransforms) {
+			configBySource.set(normalizeFsPath(entry.source.fsPath), entry);
+		}
+
+		const templateBySource = new Map<string, FileTransformEntry>();
+		for (const entry of this.templateTransforms) {
+			const key = normalizeFsPath(entry.source.fsPath);
+			if (!configBySource.has(key)) {
+				templateBySource.set(key, entry);
+			}
+		}
+
+		this.transforms = [...this.configFileTransforms, ...templateBySource.values()];
 	}
 
 	private async reloadConfigs(): Promise<void> {
@@ -148,7 +260,7 @@ export class NunjucksController implements vscode.Disposable {
 		const gatheredDirectoryTransforms: DirectoryTransform[] = [];
 
 		if (!configUris.length) {
-			this.output.appendLine('Nunjucksu: no .njk.yaml configuration files were found.');
+			this.log('Nunjucksu: no .njk.yaml configuration files were found.', 'verbose');
 		}
 
 		for (const uri of configUris) {
@@ -164,12 +276,15 @@ export class NunjucksController implements vscode.Disposable {
 			}
 		}
 
+		// Detect cycles in transform graph
+		const filteredTransforms = this.detectAndRemoveCycles(gatheredFileTransforms);
+
 		this.variables = mergedVars;
-		this.configFileTransforms = gatheredFileTransforms;
+		this.configFileTransforms = filteredTransforms;
 		this.directoryTransforms = gatheredDirectoryTransforms;
 
 		if (configUris.length) {
-			this.output.appendLine(`Nunjucksu: loaded ${gatheredFileTransforms.length} file transform(s) and ${gatheredDirectoryTransforms.length} directory transform(s) from ${configUris.length} config file(s).`);
+			this.log(`Nunjucksu: loaded ${gatheredFileTransforms.length} file transform(s) and ${gatheredDirectoryTransforms.length} directory transform(s) from ${configUris.length} config file(s).`, 'verbose');
 		}
 
 		try {
@@ -196,8 +311,11 @@ export class NunjucksController implements vscode.Disposable {
 	}
 
 	private async performTemplateReload(): Promise<void> {
+		// Snapshot to avoid race condition if configFileTransforms changes during async operations
+		const snapshotConfigTransforms = [...this.configFileTransforms];
+		
 		const configTransformsBySource = new Map<string, FileTransformEntry>();
-		for (const entry of this.configFileTransforms) {
+		for (const entry of snapshotConfigTransforms) {
 			configTransformsBySource.set(normalizeFsPath(entry.source.fsPath), entry);
 		}
 
@@ -216,6 +334,7 @@ export class NunjucksController implements vscode.Disposable {
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				this.output.appendLine(`Nunjucksu: failed to scan ${directoryTransform.sourceDir}: ${message}`);
+				vscode.window.showWarningMessage(`Nunjucksu: cannot access directory ${path.basename(directoryTransform.sourceDir)}. Check permissions.`);
 			}
 		}
 
@@ -231,7 +350,7 @@ export class NunjucksController implements vscode.Disposable {
 		dynamicTransforms.sort((a, b) => a.source.fsPath.localeCompare(b.source.fsPath, undefined, { sensitivity: 'base' }));
 
 		this.templateTransforms = dynamicTransforms;
-		this.transforms = [...this.configFileTransforms, ...dynamicTransforms];
+		this.rebuildTransformsList();
 		this.rebuildSourceWatchers();
 
 		if (this.lastTemplateCount !== dynamicTransforms.length) {
@@ -241,7 +360,8 @@ export class NunjucksController implements vscode.Disposable {
 	}
 
 	private stripNjkExtension(value: string): string {
-		return value.toLowerCase().endsWith('.njk') ? value.slice(0, -4) : value;
+		const ext = this.getTemplateExtension();
+		return value.toLowerCase().endsWith(ext.toLowerCase()) ? value.slice(0, -ext.length) : value;
 	}
 
 	private async collectTemplatesFromDirectory(directoryTransform: DirectoryTransform): Promise<Array<{ uri: vscode.Uri; relative: string }>> {
@@ -265,7 +385,8 @@ export class NunjucksController implements vscode.Disposable {
 			const childPath = path.join(currentPath, name);
 
 			if (type === vscode.FileType.File) {
-				if (name.toLowerCase().endsWith('.njk')) {
+				const ext = this.getTemplateExtension();
+				if (name.toLowerCase().endsWith(ext.toLowerCase())) {
 					bucket.push({ uri: vscode.Uri.file(childPath), relative: childRelative });
 				}
 				continue;
@@ -279,7 +400,8 @@ export class NunjucksController implements vscode.Disposable {
 
 	private createDirectoryFileTransform(directoryTransform: DirectoryTransform, uri: vscode.Uri, relative: string): FileTransformEntry | undefined {
 		const normalizedRelative = path.normalize(relative);
-		if (!normalizedRelative.toLowerCase().endsWith('.njk')) {
+		const ext = this.getTemplateExtension();
+		if (!normalizedRelative.toLowerCase().endsWith(ext.toLowerCase())) {
 			return undefined;
 		}
 
@@ -441,6 +563,20 @@ export class NunjucksController implements vscode.Disposable {
 			return undefined;
 		}
 
+		// Validate source file exists
+		try {
+			const fs = require('fs');
+			if (!fs.existsSync(sourcePath)) {
+				this.output.appendLine(`Nunjucksu: warning - source file does not exist: ${spec.source}`);
+				vscode.window.showWarningMessage(`Nunjucksu: source file not found: ${path.basename(sourcePath)}`);
+				return undefined;
+			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			this.output.appendLine(`Nunjucksu: failed to validate source path ${spec.source}: ${message}`);
+			return undefined;
+		}
+
 		if (normalizeFsPath(sourcePath) === normalizeFsPath(targetPath)) {
 			this.output.appendLine(`Nunjucksu: skipped transform where source and target are the same path (${spec.source}).`);
 			return undefined;
@@ -448,6 +584,12 @@ export class NunjucksController implements vscode.Disposable {
 
 		const searchPaths = this.buildSearchPaths(sourcePath, workspaceFolder);
 		const templateName = this.deriveTemplateName(sourcePath, searchPaths);
+		
+		if (!templateName || templateName.trim() === '') {
+			this.output.appendLine(`Nunjucksu: could not derive template name for ${spec.source}`);
+			return undefined;
+		}
+		
 		const description = `${spec.source} → ${spec.target}`;
 
 		return {
@@ -492,6 +634,16 @@ export class NunjucksController implements vscode.Disposable {
 		if (workspaceFolder) {
 			paths.push(workspaceFolder.uri.fsPath);
 		}
+		
+		// Add user-configured search paths
+		const additionalPaths = this.getAdditionalSearchPaths();
+		for (const additionalPath of additionalPaths) {
+			const resolved = workspaceFolder 
+				? path.resolve(workspaceFolder.uri.fsPath, additionalPath)
+				: path.resolve(additionalPath);
+			paths.push(resolved);
+		}
+		
 		return uniquePaths(paths);
 	}
 
@@ -565,25 +717,94 @@ export class NunjucksController implements vscode.Disposable {
 		};
 
 		const previous = this.renderQueue.get(key) ?? Promise.resolve();
-		const next = previous.catch(() => undefined).then(run).finally(() => {
+		const next = previous.catch(() => undefined).then(run).catch(error => {
+			const message = error instanceof Error ? error.message : String(error);
+			this.output.appendLine(`Nunjucksu: unhandled error in render queue for ${key}: ${message}`);
+		}).finally(() => {
 			if (this.renderQueue.get(key) === next) {
 				this.renderQueue.delete(key);
+				this.renderTimestamps.delete(key);
 			}
 		});
 
 		this.renderQueue.set(key, next);
+		this.renderTimestamps.set(key, Date.now());
 	}
 
 	private async renderTransform(transform: FileTransformEntry, reason: string): Promise<void> {
 		try {
 			const output = await this.renderTemplate(transform);
 			await this.writeTarget(transform.target, output);
-			this.output.appendLine(`Nunjucksu: rendered ${transform.description} (${reason}).`);
+			this.log(`Nunjucksu: rendered ${transform.description} (${reason}).`);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			this.output.appendLine(`Nunjucksu: failed to render ${transform.description}: ${message}`);
 			vscode.window.showWarningMessage(`Nunjucksu: failed to render ${path.basename(transform.target.fsPath)}. See output for details.`);
 		}
+	}
+
+	private detectAndRemoveCycles(transforms: FileTransformEntry[]): FileTransformEntry[] {
+		const graph = new Map<string, string[]>();
+		
+		// Build adjacency list: source -> targets
+		for (const transform of transforms) {
+			const sourceKey = normalizeFsPath(transform.source.fsPath);
+			const targetKey = normalizeFsPath(transform.target.fsPath);
+			
+			if (!graph.has(sourceKey)) {
+				graph.set(sourceKey, []);
+			}
+			graph.get(sourceKey)!.push(targetKey);
+		}
+
+		// Detect cycles using DFS
+		const visited = new Set<string>();
+		const recursionStack = new Set<string>();
+		const cycleNodes = new Set<string>();
+
+		const hasCycle = (node: string): boolean => {
+			if (recursionStack.has(node)) {
+				cycleNodes.add(node);
+				return true;
+			}
+			if (visited.has(node)) {
+				return false;
+			}
+
+			visited.add(node);
+			recursionStack.add(node);
+
+			const neighbors = graph.get(node) ?? [];
+			for (const neighbor of neighbors) {
+				if (hasCycle(neighbor)) {
+					cycleNodes.add(node);
+					return true;
+				}
+			}
+
+			recursionStack.delete(node);
+			return false;
+		};
+
+		// Check all nodes for cycles
+		for (const node of graph.keys()) {
+			hasCycle(node);
+		}
+
+		// Filter out transforms involved in cycles
+		const filtered = transforms.filter(transform => {
+			const sourceKey = normalizeFsPath(transform.source.fsPath);
+			const targetKey = normalizeFsPath(transform.target.fsPath);
+			
+			if (cycleNodes.has(sourceKey) || cycleNodes.has(targetKey)) {
+				this.output.appendLine(`Nunjucksu: removed transform ${transform.description} (part of cycle)`);
+				vscode.window.showWarningMessage(`Nunjucksu: cycle detected in transforms involving ${path.basename(transform.source.fsPath)}`);
+				return false;
+			}
+			return true;
+		});
+
+		return filtered;
 	}
 
 	private renderTemplate(transform: FileTransformEntry): Promise<string> {
