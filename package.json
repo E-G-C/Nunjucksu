@@ -3,10 +3,35 @@
   "displayName": "Nunjucksu",
   "description": "Render Nunjucks templates from .njk.yaml config",
   "version": "0.0.1",
+  "publisher": "E-G-C",
+  "author": {
+    "name": "Enrique Gonzalez"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/E-G-C/Nunjucksu.git"
+  },
+  "bugs": {
+    "url": "https://github.com/E-G-C/Nunjucksu/issues"
+  },
+  "homepage": "https://github.com/E-G-C/Nunjucksu#readme",
+  "keywords": [
+    "nunjucks",
+    "jinja2",
+    "template",
+    "templating",
+    "yaml",
+    "generator",
+    "code generation",
+    "markdown",
+    "njk"
+  ],
   "engines": {
     "vscode": "^1.105.0"
   },
   "categories": [
+    "Programming Languages",
     "Other"
   ],
   "activationEvents": [
