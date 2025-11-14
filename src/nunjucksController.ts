@@ -25,6 +25,14 @@ interface DirectoryTransform {
 	description: string;
 }
 
+interface ConfigFileData {
+	uri: vscode.Uri;
+	directoryPath: string;
+	vars: Record<string, unknown>;
+	fileTransforms: FileTransformEntry[];
+	directoryTransforms: DirectoryTransform[];
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -60,6 +68,7 @@ export class NunjucksController implements vscode.Disposable {
 	private directoryTransforms: DirectoryTransform[] = [];
 	private templateTransforms: FileTransformEntry[] = [];
 	private variables: Record<string, unknown> = {};
+	private configFiles: ConfigFileData[] = [];
 	private reloadPromise: Promise<void> | undefined;
 	private templateReloadPromise: Promise<void> | undefined;
 	private lastTemplateCount = -1;
@@ -148,7 +157,8 @@ export class NunjucksController implements vscode.Disposable {
 			return;
 		}
 
-		const watcher = vscode.workspace.createFileSystemWatcher('**/.vscode/*.njk.yaml');
+		// Watch for both .njk.yaml and .njk.json in all directories
+		const watcher = vscode.workspace.createFileSystemWatcher('**/{.vscode/*.njk.yaml,.vscode/*.njk.json,.njk.yaml,.njk.json}');
 		watcher.onDidChange(() => this.reloadConfigs());
 		watcher.onDidCreate(() => this.reloadConfigs());
 		watcher.onDidDelete(() => this.reloadConfigs());
@@ -252,20 +262,44 @@ export class NunjucksController implements vscode.Disposable {
 	}
 
 	private async performReload(): Promise<void> {
-		const configUris = await vscode.workspace.findFiles('**/.vscode/*.njk.yaml');
-		configUris.sort((a, b) => a.fsPath.localeCompare(b.fsPath, undefined, { sensitivity: 'base' }));
+		// Find both .njk.yaml and .njk.json files in .vscode/ and at directory root
+		const yamlUris = await vscode.workspace.findFiles('**/{.vscode/*.njk.yaml,.njk.yaml}');
+		const jsonUris = await vscode.workspace.findFiles('**/{.vscode/*.njk.json,.njk.json}');
+		const configUris = [...yamlUris, ...jsonUris];
+		
+		// Sort by depth (root first, then by path)
+		configUris.sort((a, b) => {
+			const depthA = a.fsPath.split(path.sep).length;
+			const depthB = b.fsPath.split(path.sep).length;
+			if (depthA !== depthB) {
+				return depthA - depthB;
+			}
+			return a.fsPath.localeCompare(b.fsPath, undefined, { sensitivity: 'base' });
+		});
 
 		const mergedVars: Record<string, unknown> = {};
 		const gatheredFileTransforms: FileTransformEntry[] = [];
 		const gatheredDirectoryTransforms: DirectoryTransform[] = [];
+		const gatheredConfigs: ConfigFileData[] = [];
 
 		if (!configUris.length) {
-			this.log('Nunjucksu: no .njk.yaml configuration files were found.', 'verbose');
+			this.log('Nunjucksu: no .njk.yaml or .njk.json configuration files were found.', 'verbose');
 		}
 
 		for (const uri of configUris) {
 			try {
 				const { fileTransforms, directoryTransforms, vars } = await this.readConfig(uri);
+				const directoryPath = path.dirname(uri.fsPath);
+				
+				// Store config with its directory context
+				gatheredConfigs.push({
+					uri,
+					directoryPath,
+					vars,
+					fileTransforms,
+					directoryTransforms
+				});
+				
 				Object.assign(mergedVars, vars);
 				gatheredFileTransforms.push(...fileTransforms);
 				gatheredDirectoryTransforms.push(...directoryTransforms);
@@ -280,6 +314,7 @@ export class NunjucksController implements vscode.Disposable {
 		const filteredTransforms = this.detectAndRemoveCycles(gatheredFileTransforms);
 
 		this.variables = mergedVars;
+		this.configFiles = gatheredConfigs;
 		this.configFileTransforms = filteredTransforms;
 		this.directoryTransforms = gatheredDirectoryTransforms;
 
@@ -311,6 +346,8 @@ export class NunjucksController implements vscode.Disposable {
 	}
 
 	private async performTemplateReload(): Promise<void> {
+		this.log('🔄 Refreshing template transforms...', 'normal');
+		
 		// Snapshot to avoid race condition if configFileTransforms changes during async operations
 		const snapshotConfigTransforms = [...this.configFileTransforms];
 		
@@ -354,8 +391,10 @@ export class NunjucksController implements vscode.Disposable {
 		this.rebuildSourceWatchers();
 
 		if (this.lastTemplateCount !== dynamicTransforms.length) {
-			this.output.appendLine(`Nunjucksu: discovered ${dynamicTransforms.length} .njk template(s) from directory transforms.`);
+			this.log(`✓ Found ${dynamicTransforms.length} templates to render`, 'normal');
 			this.lastTemplateCount = dynamicTransforms.length;
+		} else {
+			this.log(`✓ Template refresh complete (${this.transforms.length} total transforms)`, 'verbose');
 		}
 	}
 
@@ -420,16 +459,24 @@ export class NunjucksController implements vscode.Disposable {
 	}
 
 	private async readConfig(uri: vscode.Uri): Promise<{ vars: Record<string, unknown>; fileTransforms: FileTransformEntry[]; directoryTransforms: DirectoryTransform[]; }> {
-		const bytes = await vscode.workspace.fs.readFile(uri);
-		const text = Buffer.from(bytes).toString('utf8');
-		const parsed = parse(text) ?? {};
+		try {
+			const bytes = await vscode.workspace.fs.readFile(uri);
+			const text = Buffer.from(bytes).toString('utf8');
+			
+			// Parse based on file extension
+			let parsed: unknown;
+			if (uri.fsPath.endsWith('.json')) {
+				parsed = JSON.parse(text);
+			} else {
+				parsed = parse(text) ?? {};
+			}
 
-		if (!isPlainObject(parsed)) {
-			throw new Error('Configuration root must be a mapping.');
-		}
+			if (!isPlainObject(parsed)) {
+				throw new Error('Configuration root must be a mapping.');
+			}
 
-		const vars = this.extractVars(parsed.vars);
-		const specs = this.extractTransformSpecs(parsed.transforms, uri.fsPath);
+			const vars = this.extractVars(parsed.vars);
+			const specs = this.extractTransformSpecs(parsed.transforms, uri.fsPath);
 
 		const configDir = path.dirname(uri.fsPath);
 		const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri) ?? vscode.workspace.workspaceFolders?.[0];
@@ -452,7 +499,16 @@ export class NunjucksController implements vscode.Disposable {
 			}
 		}
 
-		return { vars, fileTransforms, directoryTransforms };
+			// Log success
+			this.log(`✓ Config loaded successfully from ${path.basename(uri.fsPath)}`, 'verbose');
+
+			return { vars, fileTransforms, directoryTransforms };
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			this.output.appendLine(`✗ Error reading config ${uri.fsPath}: ${message}`);
+			// Return empty config to allow recovery when file is fixed
+			return { vars: {}, fileTransforms: [], directoryTransforms: [] };
+		}
 	}
 
 	private extractVars(raw: unknown): Record<string, unknown> {
@@ -672,9 +728,12 @@ export class NunjucksController implements vscode.Disposable {
 			}
 		}
 
+		this.log(`Setting up ${this.transformsBySource.size} source watchers`, 'verbose');
+
 		for (const entries of this.transformsBySource.values()) {
 			const watcher = this.createWatcher(entries[0].source);
 			this.sourceWatchers.push(watcher);
+			this.log(`  → Watching: ${entries[0].source.fsPath}`, 'verbose');
 
 			watcher.onDidChange(uri => this.handleSourceEvent(uri, 'change'));
 			watcher.onDidCreate(uri => this.handleSourceEvent(uri, 'create'));
@@ -807,10 +866,48 @@ export class NunjucksController implements vscode.Disposable {
 		return filtered;
 	}
 
+	private getScopedVariables(filePath: string): Record<string, unknown> {
+		// Start with global variables
+		const result: Record<string, unknown> = { ...this.variables };
+		
+		// Get normalized absolute path
+		const normalizedFilePath = path.resolve(filePath);
+		
+		// Find all config files that are in parent directories of the file
+		const applicableConfigs: ConfigFileData[] = [];
+		
+		for (const config of this.configFiles) {
+			const normalizedConfigDir = path.resolve(config.directoryPath);
+			
+			// Check if the file is within this config's directory (or subdirectory)
+			const relative = path.relative(normalizedConfigDir, normalizedFilePath);
+			if (!relative.startsWith('..') && !path.isAbsolute(relative)) {
+				applicableConfigs.push(config);
+			}
+		}
+		
+		// Sort by directory depth (shallowest first, deepest last)
+		// This ensures that local configs override parent configs
+		applicableConfigs.sort((a, b) => {
+			const depthA = a.directoryPath.split(path.sep).length;
+			const depthB = b.directoryPath.split(path.sep).length;
+			return depthA - depthB;
+		});
+		
+		// Merge variables from applicable configs (later ones override earlier ones)
+		for (const config of applicableConfigs) {
+			Object.assign(result, config.vars);
+		}
+		
+		return result;
+	}
+
 	private renderTemplate(transform: FileTransformEntry): Promise<string> {
 		const loader = new nunjucks.FileSystemLoader(transform.searchPaths, { noCache: true, watch: false });
 		const environment = new nunjucks.Environment(loader, { autoescape: false });
-		const context = { ...this.variables };
+		
+		// Get scoped variables based on the template's location
+		const context = this.getScopedVariables(transform.source.fsPath);
 
 		return new Promise((resolve, reject) => {
 			environment.render(transform.templateName, context, (err, result) => {
@@ -838,5 +935,30 @@ export class NunjucksController implements vscode.Disposable {
 		}
 
 		await vscode.workspace.fs.writeFile(uri, next);
+	}
+
+	// Diagnostic methods for troubleshooting
+	public getOutputChannel(): vscode.OutputChannel {
+		return this.output;
+	}
+
+	public getConfigFileCount(): number {
+		return this.configFileTransforms.length;
+	}
+
+	public getTemplateTransformCount(): number {
+		return this.templateTransforms.length;
+	}
+
+	public getSourceWatcherCount(): number {
+		return this.sourceWatchers.length;
+	}
+
+	public getTotalTransformCount(): number {
+		return this.transforms.length;
+	}
+
+	public getDirectoryTransformCount(): number {
+		return this.directoryTransforms.length;
 	}
 }

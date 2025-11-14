@@ -25,7 +25,35 @@ transforms:
 
 ## Configuration Reference
 
-Each `.njk.yaml` file must be valid YAML. All files found under `**/.vscode/*.njk.yaml` are merged (later files override earlier ones). **Note**: Variable merging uses shallow `Object.assign` - later files will completely replace nested objects rather than deep merging them.
+Configuration files can be either `.njk.yaml` or `.njk.json` format. These files can be placed in:
+
+1. **`.vscode/` directory** - Global project configuration
+2. **Directory root** - Local configuration files (`.njk.yaml` or `.njk.json`) that apply to that directory and its subdirectories
+
+All configuration files are merged with directory-based precedence: variables defined in local configs (closer to the template) override those in parent directories. The `.vscode/` configs are treated as root-level configuration.
+
+**Note**: Variable merging uses shallow `Object.assign` - later files will completely replace nested objects rather than deep merging them.
+
+### Local Configuration Files
+
+You can place `.njk.yaml` or `.njk.json` files in any directory to define variables scoped to that directory and its subdirectories. This allows for:
+
+- **Project-wide defaults** in root `.vscode/` configs
+- **Directory-specific overrides** using `.njk.yaml` or `.njk.json` in subdirectories
+- **Template-specific variables** by placing config files near templates
+
+**Example structure:**
+
+```plaintext
+project/
+  .vscode/
+    main.njk.yaml          # Global variables
+  src/
+    .njk.yaml              # Overrides for src/ directory
+    components/
+      .njk.json            # Overrides for components/ (JSON format)
+      button.njk           # Uses: global → src → components variables
+```
 
 ### `vars`
 
@@ -36,6 +64,34 @@ vars:
   company: Example Co
   author:
     name: Ada
+```
+
+**Variable Precedence:**
+
+When a template is rendered, variables are resolved with the following precedence (highest to lowest):
+
+1. Local config files in the template's directory
+2. Local config files in parent directories (from deepest to shallowest)
+3. Global config files in `.vscode/`
+
+**Example:**
+
+```yaml
+# .vscode/main.njk.yaml
+vars:
+  env: production
+  apiUrl: https://api.example.com
+  theme: light
+
+# src/.njk.yaml
+vars:
+  env: development
+  theme: dark
+
+# Template in src/page.njk will receive:
+# env: development (overridden by src/.njk.yaml)
+# apiUrl: https://api.example.com (from global)
+# theme: dark (overridden by src/.njk.yaml)
 ```
 
 ### Nunjucks Template Examples
@@ -145,7 +201,7 @@ transforms:
 | ------------------------- | --------------------------------- | ---------------------------------------------- |
 | `nunjucksu.renderAll`     | Render Nunjucksu Templates        | Manually rerender every configured transform. |
 
-The extension auto-activates when it detects at least one `.vscode/*.njk.yaml` file in the workspace.
+The extension auto-activates when it detects at least one `.njk.yaml` or `.njk.json` configuration file in the workspace (either in `.vscode/` or in any directory).
 
 ## Known Limitations
 

@@ -43,7 +43,11 @@
     "commands": [
       {
         "command": "nunjucksu.renderAll",
-        "title": "Render Nunjucks Templates"
+        "title": "Nunjucksu: Render All Templates"
+      },
+      {
+        "command": "nunjucksu.showDiagnostics",
+        "title": "Nunjucksu: Show Diagnostics"
       }
     ],
     "configuration": {
