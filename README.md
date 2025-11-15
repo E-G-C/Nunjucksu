@@ -25,7 +25,7 @@ transforms:
 
 ## Configuration Reference
 
-Configuration files can be either `.njk.yaml` or `.njk.json` format. These files can be placed in:
+Configuration files can be either `.njk.yaml` or `.njk.json` format. File names are unrestricted—as long as they end with `.njk.yaml` or `.njk.json` they will be picked up (e.g., `myconfig1.njk.yaml`, `content-vars.njk.json`). These files can be placed in:
 
 1. **`.vscode/` directory** - Global project configuration
 2. **Directory root** - Local configuration files (`.njk.yaml` or `.njk.json`) that apply to that directory and its subdirectories
@@ -49,9 +49,9 @@ project/
   .vscode/
     main.njk.yaml          # Global variables
   src/
-    .njk.yaml              # Overrides for src/ directory
+    src-config.njk.yaml    # Overrides for src/ directory
     components/
-      .njk.json            # Overrides for components/ (JSON format)
+      component-config.njk.json # Overrides for components/ (JSON format)
       button.njk           # Uses: global → src → components variables
 ```
 
@@ -83,15 +83,15 @@ vars:
   apiUrl: https://api.example.com
   theme: light
 
-# src/.njk.yaml
+# src/src-config.njk.yaml
 vars:
   env: development
   theme: dark
 
 # Template in src/page.njk will receive:
-# env: development (overridden by src/.njk.yaml)
+# env: development (overridden by src/src-config.njk.yaml)
 # apiUrl: https://api.example.com (from global)
-# theme: dark (overridden by src/.njk.yaml)
+# theme: dark (overridden by src/src-config.njk.yaml)
 ```
 
 ### Nunjucks Template Examples

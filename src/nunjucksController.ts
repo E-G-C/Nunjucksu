@@ -158,7 +158,7 @@ export class NunjucksController implements vscode.Disposable {
 		}
 
 		// Watch for both .njk.yaml and .njk.json in all directories
-		const watcher = vscode.workspace.createFileSystemWatcher('**/{.vscode/*.njk.yaml,.vscode/*.njk.json,.njk.yaml,.njk.json}');
+		const watcher = vscode.workspace.createFileSystemWatcher('**/*.njk.{yaml,json}');
 		watcher.onDidChange(() => this.reloadConfigs());
 		watcher.onDidCreate(() => this.reloadConfigs());
 		watcher.onDidDelete(() => this.reloadConfigs());
@@ -263,8 +263,8 @@ export class NunjucksController implements vscode.Disposable {
 
 	private async performReload(): Promise<void> {
 		// Find both .njk.yaml and .njk.json files in .vscode/ and at directory root
-		const yamlUris = await vscode.workspace.findFiles('**/{.vscode/*.njk.yaml,.njk.yaml}');
-		const jsonUris = await vscode.workspace.findFiles('**/{.vscode/*.njk.json,.njk.json}');
+		const yamlUris = await vscode.workspace.findFiles('**/*.njk.yaml');
+		const jsonUris = await vscode.workspace.findFiles('**/*.njk.json');
 		const configUris = [...yamlUris, ...jsonUris];
 		
 		// Sort by depth (root first, then by path)
@@ -681,7 +681,22 @@ export class NunjucksController implements vscode.Disposable {
 			return path.normalize(value);
 		}
 
-		const base = workspaceFolder?.uri.fsPath ?? configDir;
+		let base = configDir;
+		if (workspaceFolder) {
+			const workspacePath = workspaceFolder.uri.fsPath;
+			const relativeConfigDir = path.relative(workspacePath, configDir);
+			const insideWorkspace = !relativeConfigDir.startsWith('..') && !path.isAbsolute(relativeConfigDir);
+			const segments = relativeConfigDir.split(path.sep).filter(Boolean);
+
+			if (!segments.length) {
+				// Config lives at workspace root
+				base = workspacePath;
+			} else if (insideWorkspace && segments[0] === '.vscode') {
+				// Treat .vscode configs as workspace-root relative for backwards compatibility
+				base = workspacePath;
+			}
+		}
+
 		return path.normalize(path.resolve(base, value));
 	}
 

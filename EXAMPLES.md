@@ -10,10 +10,10 @@ my-project/
   .vscode/
     config.njk.yaml          # Global configuration
   src/
-    .njk.yaml                # Source directory config
+    src-config.njk.yaml      # Source directory config
     header.njk               # Template using src variables
     components/
-      .njk.json              # Component directory config (JSON format)
+      component-config.njk.json  # Component directory config (JSON format)
       button.njk             # Template using component variables
 ```
 
@@ -26,7 +26,7 @@ vars:
   baseUrl: https://example.com
 ```
 
-**Source Directory Config** (`src/.njk.yaml`):
+**Source Directory Config** (`src/src-config.njk.yaml`):
 ```yaml
 vars:
   environment: development
@@ -34,7 +34,7 @@ vars:
   baseUrl: http://localhost:3000
 ```
 
-**Component Directory Config** (`src/components/.njk.json`):
+**Component Directory Config** (`src/components/component-config.njk.json`):
 ```json
 {
   "vars": {
@@ -74,8 +74,8 @@ vars:
 
 **Variable Resolution:**
 - `projectName` and `version` come from global config
-- `environment` and `baseUrl` are overridden by `src/.njk.yaml`
-- `componentVersion` and `styleTheme` are added by `src/components/.njk.json`
+- `environment` and `baseUrl` are overridden by `src/src-config.njk.yaml`
+- `componentVersion` and `styleTheme` are added by `src/components/component-config.njk.json`
 
 ### Example 2: Multi-Environment Setup
 
@@ -86,13 +86,13 @@ project/
     main.njk.yaml            # Global defaults
   environments/
     dev/
-      .njk.yaml              # Development overrides
+      dev-config.njk.yaml    # Development overrides
       config.json.njk        # Template for dev config
     staging/
-      .njk.yaml              # Staging overrides
+      staging-config.njk.yaml # Staging overrides
       config.json.njk        # Template for staging config
     production/
-      .njk.yaml              # Production overrides
+      production-config.njk.yaml # Production overrides
       config.json.njk        # Template for production config
 ```
 
@@ -106,7 +106,7 @@ vars:
   apiUrl: https://api.example.com
 ```
 
-**Dev Config** (`environments/dev/.njk.yaml`):
+**Dev Config** (`environments/dev/dev-config.njk.yaml`):
 ```yaml
 vars:
   port: 8080
@@ -115,7 +115,7 @@ vars:
   apiUrl: http://localhost:4000
 ```
 
-**Staging Config** (`environments/staging/.njk.yaml`):
+**Staging Config** (`environments/staging/staging-config.njk.yaml`):
 ```yaml
 vars:
   port: 5000
@@ -123,7 +123,7 @@ vars:
   apiUrl: https://staging-api.example.com
 ```
 
-**Production Config** (`environments/production/.njk.yaml`):
+**Production Config** (`environments/production/production-config.njk.yaml`):
 ```yaml
 vars:
   logLevel: error
@@ -166,9 +166,9 @@ vars:
 
 ### Example 3: JSON Configuration Format
 
-Local configs can use `.njk.json` format instead of YAML:
+Local configs can use `.njk.json` format instead of YAML as long as the filename ends with `.njk.json`:
 
-**Component Config** (`.njk.json`):
+**Component Config** (`component-config.njk.json`):
 ```json
 {
   "vars": {
@@ -200,9 +200,9 @@ project/
   .vscode/
     main.njk.yaml          → theme: "light"
   src/
-    .njk.yaml              → theme: "auto"
+    src-config.njk.yaml    → theme: "auto"
     pages/
-      .njk.yaml            → theme: "dark"
+      pages-config.njk.yaml → theme: "dark"
       dashboard.njk        → Uses theme: "dark"
     components/
       header.njk           → Uses theme: "auto"

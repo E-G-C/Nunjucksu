@@ -1,5 +1,8 @@
 import * as assert from 'assert';
+import * as path from 'path';
+import * as vscode from 'vscode';
 import { parse } from 'yaml';
+import { NunjucksController } from '../nunjucksController';
 
 suite('Local Config Files - Format Support', () => {
 	test('YAML config parses correctly', () => {
@@ -138,5 +141,31 @@ suite('Variable Scoping - Precedence Rules', () => {
 		assert.strictEqual(merged.nested.b, 'new');
 		assert.strictEqual(merged.nested.c, '3');
 		assert.ok(!('a' in merged.nested), 'Parent nested properties are lost');
+	});
+});
+
+suite('Path Resolution', () => {
+	const workspaceRoot = path.join(__dirname, 'fixtures', 'workspace');
+	const workspaceFolder = {
+		uri: vscode.Uri.file(workspaceRoot),
+		name: 'workspace',
+		index: 0
+	} as vscode.WorkspaceFolder;
+
+	function callResolvePath(value: string, configDir: string): string {
+		const controller = Object.create(NunjucksController.prototype) as NunjucksController;
+		return (controller as any).resolvePath(value, workspaceFolder, configDir);
+	}
+
+	test('.vscode configs resolve relative to workspace root', () => {
+		const configDir = path.join(workspaceRoot, '.vscode');
+		const result = callResolvePath('templates/index.html', configDir);
+		assert.strictEqual(result, path.join(workspaceRoot, 'templates', 'index.html'));
+	});
+
+	test('nested configs resolve relative to their directory', () => {
+		const configDir = path.join(workspaceRoot, 'templates', 'local');
+		const result = callResolvePath('./index.html', configDir);
+		assert.strictEqual(result, path.join(configDir, 'index.html'));
 	});
 });
